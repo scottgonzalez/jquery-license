@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 
-var getSignatures,
-	http = require( "http" ),
+var http = require( "http" ),
 	Notifier = require( "git-notifier" ).Notifier,
 	logger = require( "simple-log" ).init( "jquery-license" ),
 	debug = require( "debug" )( "server" ),
 	Repo = require( "../lib/repo" ),
 	auditPr = require( "../lib/pr" ).audit,
-	getHashedSignatures = require( "../lib/signatures" ).hashed,
-	config = require( "../lib/config" );
+	config = require( "../lib/config" ),
+	signatureUtil = require( "./server/signature" );
 
 var server = http.createServer(),
-	notifier = new Notifier();
+	notifier = new Notifier(),
+	signatureManager = signatureUtil.init({
+		refresh: config.signatureRefresh
+	});
+
+process.on( "uncaughtException", function( error ) {
+	logger.error( "Uncaught exception", error.stack );
+	debug( "Shutting down due to uncaught exception" );
+	server.close();
+	signatureManager.stop();
+});
 
 // Create the notifier
 server.on( "request", notifier.handler );
@@ -23,13 +32,18 @@ notifier.on( "error", function( error ) {
 
 debug( "listening on port " + config.port );
 
+setTimeout(function() {
+	throw new Error( "wat?" );
+}, 1000 );
+return;
+
 function prHook( event ) {
 	if ( event.payload.action !== "opened" && event.payload.action !== "synchronize" ) {
 		return;
 	}
 
 	debug( "processing hook", event.repo, event.pr );
-	getSignatures().then(
+	signatureUtil.get().then(
 		function( signatures ) {
 			auditPr({
 				repo: event.repo,
@@ -76,32 +90,3 @@ function prHook( event ) {
 		}
 	);
 }
-
-// Fetch new CLA signatures periodically
-getSignatures = (function() {
-	var promise = getHashedSignatures();
-
-	function updateSignatures() {
-		var updatedPromise = getHashedSignatures();
-
-		debug( "updating signatures" );
-		updatedPromise
-			.then(function() {
-				debug( "successfully updated signatures" );
-				promise = updatedPromise;
-			})
-			.catch(function( error ) {
-				logger.error( "Error getting signatures", error.stack );
-				debug( "error updating signatures", error );
-			})
-			.then(function() {
-				setTimeout( updateSignatures, config.signatureRefresh );
-			});
-	}
-
-	setTimeout( updateSignatures, config.signatureRefresh );
-
-	return function() {
-		return promise;
-	};
-})();
